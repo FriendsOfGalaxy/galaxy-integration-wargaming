@@ -1,0 +1,12 @@
+{
+    "name": "Galaxy Wargaming plugin",
+    "platform": "wargaming",
+    "guid": "91728e8a-33c3-4b6d-8382-4dd31043dec1",
+    "version": "0.7.7",
+    "description": "Galaxy Wargaming plugin",
+    "author": "Mikhail Paulyshka",
+    "email": "mixail@modxvm.com",
+    "url": "https://github.com/Mixaill/galaxy-integration-wargaming",
+    "script": "plugin.py",
+    "update_url": "https://raw.githubusercontent.com/FriendsOfGalaxy/galaxy-integration-wargaming/master/current_version.json"
+}
