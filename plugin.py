@@ -1,3 +1,6 @@
+# (c) 2019-2020 Mikhail Paulyshka
+# SPDX-License-Identifier: MIT
+
 import asyncio
 import json
 import logging
@@ -59,7 +62,9 @@ class WargamingPlugin(Plugin):
       * ImportAchievements
       * ShutdownPlatformClient
       * ImportGameLibrarySettings
-
+      * ImportLocalSize
+      * ImportSubscriptions
+      * ImportSubscriptionGames
     """
 
     SLEEP_CHECK_INSTANCES = 30
