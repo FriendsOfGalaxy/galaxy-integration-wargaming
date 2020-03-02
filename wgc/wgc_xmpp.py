@@ -1,4 +1,6 @@
-import asyncio
+# (c) 2019-2020 Mikhail Paulyshka
+# SPDX-License-Identifier: MIT
+
 import logging
 from typing import Dict
 
@@ -80,12 +82,6 @@ class WgcXMPP(slixmpp.ClientXMPP):
 
     #Roster checks
     async def is_friend(self, account_id) -> bool:
-        while len(self.client_roster) == 0:
-            try:
-                await asyncio.sleep(1)
-            except asyncio.CancelledError:
-                break
-
         for jid in self.client_roster:
             friend_id = jid.split('@', 1)[0]
             if friend_id == str(account_id):
@@ -97,12 +93,6 @@ class WgcXMPP(slixmpp.ClientXMPP):
     async def get_friends(self) -> Dict[str,str]:
         result = dict()
 
-        while len(self.client_roster) == 0:
-            try:
-                await asyncio.sleep(1)
-            except asyncio.CancelledError:
-                break
-
         for jid in self.client_roster:
             user_id = jid.split('@', 1)[0]
             if user_id == str(self._account_id):
@@ -113,12 +103,6 @@ class WgcXMPP(slixmpp.ClientXMPP):
 
 
     async def get_presence(self, user_id: str) -> str:
-        while len(self.client_roster) == 0:
-            try:
-                await asyncio.sleep(1)
-            except asyncio.CancelledError:
-                break
-
         for jid in self.client_roster:
             if jid.split('@', 1)[0] == str(user_id):
                 return 'online' if self._game.lower() in self.client_roster[jid].resources else 'offline'

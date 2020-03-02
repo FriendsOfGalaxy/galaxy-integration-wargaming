@@ -1,8 +1,12 @@
+# (c) 2019-2020 Mikhail Paulyshka
+# SPDX-License-Identifier: MIT
+
 import asyncio
 from collections import namedtuple
 import json
 import logging
 import os
+import platform
 import pprint
 import random
 import string
@@ -29,12 +33,13 @@ class WGCAuthorizationServer():
         self.__site = None
 
         self.__app.add_routes([
-            aiohttp.web.get ('/login'        , self.handle_login_get        ),
-            aiohttp.web.get ('/login_failed' , self.handle_login_failed_get ),
-            aiohttp.web.get ('/2fa'          , self.handle_2fa_get          ),
-            aiohttp.web.get ('/2fa_failed'   , self.handle_2fa_failed_get   ),
-            aiohttp.web.get ('/finished'     , self.handle_finished_get     ),
-
+            aiohttp.web.get ('/login'                , self.handle_login_get                    ),
+            aiohttp.web.get ('/login_failed'         , self.handle_login_failed_get             ),
+            aiohttp.web.get ('/2fa'                  , self.handle_2fa_get                      ),
+            aiohttp.web.get ('/2fa_failed'           , self.handle_2fa_failed_get               ),
+            aiohttp.web.get ('/finished'             , self.handle_finished_get                 ),
+            aiohttp.web.get ('/unsupported_platform' , self.handle_unsupported_platform_get     ),
+            
             aiohttp.web.post('/login'   , self.handle_login_post  ),   
             aiohttp.web.post('/2fa'     , self.handle_2fa_post    ),
         ])
@@ -51,6 +56,9 @@ class WGCAuthorizationServer():
 
     async def handle_login_get(self, request):
         return aiohttp.web.FileResponse(os.path.join(os.path.dirname(os.path.realpath(__file__)),'html\\login.html'))
+
+    async def handle_unsupported_platform_get(self, request):
+        return aiohttp.web.FileResponse(os.path.join(os.path.dirname(os.path.realpath(__file__)),'html\\unsupported_platform.html'))
 
     async def handle_login_failed_get(self, request):
         return aiohttp.web.FileResponse(os.path.join(os.path.dirname(os.path.realpath(__file__)),'html\\login_failed.html'))
@@ -70,17 +78,18 @@ class WGCAuthorizationServer():
 
         #check data
         data_valid = True
-        if 'realm' not in data:
+        if 'realm' not in data or not data['realm']:
+            logging.warning('wgc_auth_server/handle_login_post: data is not valid, realm is missing')
             data_valid = False
-        if 'email' not in data:
+        if 'email' not in data or not data['email']:
+            logging.warning('wgc_auth_server/handle_login_post: data is not valid, email is missing')
             data_valid = False
-        if 'password' not in data:
+        if 'password' not in data or not data['password']:
+            logging.warning('wgc_auth_server/handle_login_post: data is not valid, password is missing')
             data_valid = False
 
         if data_valid:
             auth_result = await self.__backend.do_auth_emailpass(data['realm'], data['email'], data['password'])
-        else:
-            logging.warning('wgc_auth_server/handle_login_post: data is not valid')
 
         self.__process_auth_result(auth_result)
 
@@ -89,7 +98,7 @@ class WGCAuthorizationServer():
         data = await request.post()
 
         auth_result = WGCAuthorizationResult.INCORRECT_2FA
-        if 'authcode' in data:
+        if 'authcode' in data and data['authcode']:
             use_backup_code = True if 'use_backup' in data else False
             auth_result = await self.__backend.do_auth_2fa(data['authcode'], use_backup_code)
 
@@ -229,7 +238,10 @@ class WGCApi:
     #
 
     def auth_server_uri(self) -> str:
-        return 'http://%s:%s/login' % (self.LOCALSERVER_HOST, self.LOCALSERVER_PORT)
+        if platform.system() == 'Windows':
+            return 'http://%s:%s/login' % (self.LOCALSERVER_HOST, self.LOCALSERVER_PORT)
+        
+        return 'http://%s:%s/unsupported_platform' % (self.LOCALSERVER_HOST, self.LOCALSERVER_PORT)
 
     async def auth_server_start(self) -> bool:
 
@@ -658,6 +670,10 @@ class WGCApi:
             self.__get_url('wgcps', self.__login_info['realm'], self.WGCPS_FETCH_PRODUCT_INFO), 
             json = { 'account_id' : self.get_account_id(), 'country' : self._country_code, 'storefront' : 'wgc_showcase' })
 
+        if response.status == 504:
+            logging.exception('wgc_auth/__wgcps_fetch_product_list: failed to get data: gateway timeout %s' % response.status)
+            return None
+
         response_content = None
         try:
             response_content = json.loads(response.text)
@@ -677,7 +693,7 @@ class WGCApi:
         response_content['data']['product_content'] = list()
         for product_uri in response_content['data']['product_uris']:
             product_response = await self.request_get(product_uri)
-            if response.status != 200:
+            if product_response.status != 200:
                 logging.error('wgc_auth/__wgcps_fetch_product_list: error on retrieving product info: %s' % product_uri)
                 continue
 
