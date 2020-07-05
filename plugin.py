@@ -10,9 +10,22 @@ import platform
 import sys
 from typing import Any, Dict, List, Optional
 
+#platform helper
+def get_platform() -> str:
+    system = platform.system()
+    if system == 'Windows':
+        return 'windows'
+
+    if system == 'Darwin':
+        return 'macos'
+
+    logging.error('plugin/get_platform: unknown platform %s' % system)
+    return 'unknown'
+
+
 #expand sys.path
-thirdparty =  os.path.join(os.path.dirname(os.path.realpath(__file__)),'3rdparty/')
-if thirdparty not in sys.path:
+thirdparty =  os.path.join(os.path.dirname(os.path.realpath(__file__)),'3rdparty_%s/' % get_platform())
+if thirdparty not in sys.path and os.path.exists(thirdparty):
     sys.path.insert(0, thirdparty)
 
 #read manifest
@@ -27,20 +40,19 @@ logging.getLogger("urllib3").propagate = False
 #Start sentry
 import sentry_sdk
 sentry_sdk.init(
-    "https://b9055b733b99493bb3f4dd4855e0e990@sentry.friends-of-friends-of-galaxy.org/2",
+    "https://d39c903218d54f3ebe3724d54b6edc1c@sentry.friends-of-friends-of-galaxy.org/2",
     release=("galaxy-integration-wargaming@%s" % manifest['version']))
 
 from galaxy.api.consts import OSCompatibility, Platform, PresenceState
 from galaxy.api.errors import BackendError, InvalidCredentials, UnknownError
 from galaxy.api.plugin import Plugin, create_and_run_plugin
 from galaxy.api.types import Authentication, Game, GameTime, LicenseInfo, LicenseType, LocalGame, LocalGameState, NextStep, UserInfo, UserPresence
-import galaxy.proc_tools as proc_tools
 
 import webbrowser
 
 from galaxyutils.time_tracker import TimeTracker, GameNotTrackedException, GamesStillBeingTrackedException
 
-from wgc import WGC, WGCLocalApplication, PAPIWoT, WgcXMPP, get_profile_url
+from wgc import WGC, WgcLauncher, WGCLocalApplication, PAPIWoT, WgcXMPP, get_profile_url
 
 class WargamingPlugin(Plugin):
     """
@@ -57,12 +69,12 @@ class WargamingPlugin(Plugin):
       * ImportGameTime
       * ImportOSCompatibility
       * ImportUserPresence
+      * ImportLocalSize
 
     Missing features:
       * ImportAchievements
       * ShutdownPlatformClient
       * ImportGameLibrarySettings
-      * ImportLocalSize
       * ImportSubscriptions
       * ImportSubscriptionGames
     """
@@ -87,19 +99,16 @@ class WargamingPlugin(Plugin):
         self.__local_games_states = dict()
         self.__local_applications = dict()
 
-        self.__platform = 'unknown'
-        if platform.system() == 'Windows':
-            self.__platform = 'windows'
-        elif platform.system() == 'Darwin':
-            self.__platform = 'macos'
-        else:
-            logging.error('plugin/__init__: unknown platform %s' % platform)
+        self.__platform = get_platform()
 
     #
     # Authentication
     #
 
     async def authenticate(self, stored_credentials = None):
+        authserver = self._wgc.get_auth_server()
+        wgni = self._wgc.get_wgni_client()
+
         if not stored_credentials:
             logging.info('plugin/authenticate: no stored credentials')
 
@@ -107,32 +116,36 @@ class WargamingPlugin(Plugin):
                 "window_title": "Login to Wargaming",
                 "window_width": 640,
                 "window_height": 460,
-                "start_uri": self._wgc.auth_server_uri(),
+                "start_uri": authserver.get_uri(),
                 "end_uri_regex": '.*finished'
             }
-            if not await self._wgc.auth_server_start():
+            if not await authserver.start():
                 raise BackendError()
 
             return NextStep("web_session", AUTH_PARAMS)
 
         else:
-            auth_passed = await self._wgc.login_info_set(stored_credentials)
+            auth_passed = await wgni.login_info_set(stored_credentials)
             if not auth_passed:
                 logging.warning('plugin/authenticate: stored credentials are invalid')
                 raise InvalidCredentials()
             
-            return Authentication(self._wgc.account_id(), '%s_%s' % (self._wgc.account_realm(), self._wgc.account_nickname()))
+            return Authentication(wgni.get_account_id(), '%s_%s' % (wgni.get_account_realm(), wgni.get_account_nickname()))
+
 
     async def pass_login_credentials(self, step, credentials, cookies):
-        await self._wgc.auth_server_stop()
+        authserver = self._wgc.get_auth_server()
+        wgni = self._wgc.get_wgni_client()
 
-        login_info = self._wgc.login_info_get()
+        await authserver.shutdown()
+
+        login_info = wgni.login_info_get()
         if not login_info:
             logging.error('plugin/authenticate: login info is None!')
             raise InvalidCredentials()
 
         self.store_credentials(login_info)
-        return Authentication(self._wgc.account_id(), '%s_%s' % (self._wgc.account_realm(), self._wgc.account_nickname()))
+        return Authentication(wgni.get_account_id(), '%s_%s' % (wgni.get_account_realm(), wgni.get_account_nickname()))
 
     #
     # ImportOwnedGames
@@ -141,7 +154,8 @@ class WargamingPlugin(Plugin):
     async def get_owned_games(self) -> List[Game]:     
         owned_applications = list()
 
-        for instance in (await self._wgc.get_owned_applications(self._wgc.account_realm())).values():
+        wgni = self._wgc.get_wgni_client()
+        for instance in (await self._wgc.get_owned_applications(wgni.get_account_realm())).values():
             license_info = LicenseInfo(LicenseType.SinglePurchase if instance.is_application_purchased() else LicenseType.FreeToPlay, None)
             owned_applications.append(Game(instance.get_application_id(), instance.get_application_fullname(), None, license_info))
 
@@ -166,7 +180,7 @@ class WargamingPlugin(Plugin):
     #
 
     async def launch_game(self, game_id: str) -> None:
-        self.__local_applications[game_id].RunExecutable(self.__platform)
+        self.__local_applications[game_id].run_application(self.__platform)
         self.__change_game_status(game_id, LocalGameState.Installed | LocalGameState.Running, True)
 
     #
@@ -178,26 +192,27 @@ class WargamingPlugin(Plugin):
             webbrowser.open(self._wgc.get_wgc_install_url())
             return
 
-        instances = await self._wgc.get_owned_applications(self._wgc.account_realm())
+        wgni = self._wgc.get_wgni_client()
+        instances = await self._wgc.get_owned_applications(wgni.get_account_realm())
         if game_id not in instances:
             logging.warning('plugin/install_games: failed to find the application with id %s' % game_id)
             raise BackendError()
         
-        instances[game_id].install_application()
+        await instances[game_id].install_application()
 
     #
     # UninstallGame
     #
 
     async def uninstall_game(self, game_id: str) -> None:
-        self.__local_applications[game_id].UninstallGame()
+        self.__local_applications[game_id].uninstall_application()
 
     #
     # LaunchPlatformClient
     #
 
     async def launch_platform_client(self) -> None:
-        self._wgc.launch_client(True)
+        WgcLauncher.launch_wgc(True)
 
     #
     # ImportFriends
@@ -229,14 +244,33 @@ class WargamingPlugin(Plugin):
     # ImportOSCompatibility
     #
 
-    async def get_os_compatibility(self, game_id: str, context: Any) -> Optional[OSCompatibility]:
-        if game_id not in self.__local_applications:
-            #TODO: find a way to get OS compat from owned application, not local
-            #logging.warning('plugin/get_os_compatibility: unknown game_id %s' % game_id)
-            return OSCompatibility.Windows
+    async def prepare_os_compatibility_context(self, game_ids: List[str]) -> Any:     
+        result = dict()
+
+        game_restrictions = self._wgc.get_game_restrictions()
+        current_platform = get_platform()
+
+        for game_id in game_ids:
+            #populate from local app
+            if game_id in self.__local_applications:
+                result[game_id] = self.__local_applications[game_id].GetOsCompatibility()
+                continue
+
+            #windows is supported in any way
+            result[game_id] = ['windows']
+
+            #populate from game restriction for non-windows platform
+            if current_platform != 'windows' and game_restrictions:
+                if game_id in game_restrictions.get_allowed_ids():
+                    result[game_id].append(current_platform)
+
+        return result
+
+    async def get_os_compatibility(self, game_id: str, context: Any) -> Optional[OSCompatibility]:      
+        game = context[game_id]
 
         result = None
-        for platform in self.__local_applications[game_id].GetOsCompatibility():
+        for platform in game:
             if platform == 'windows':
                 result = OSCompatibility.Windows if result is None else result | OSCompatibility.Windows
             elif platform == 'macos':
@@ -266,6 +300,26 @@ class WargamingPlugin(Plugin):
             raise UnknownError('plugin/get_user_presence: failed to get info for user %s' % user_id)
 
         return context[user_id]
+
+    #
+    # ImportLocalSize
+    #
+
+    async def prepare_local_size_context(self, game_ids: List[str]) -> Any:
+        ctx = dict()
+
+        for game_id in game_ids:
+            if game_id in self.__local_applications:
+                ctx[game_id] = self.__local_applications[game_id].get_app_size()
+
+        return ctx
+
+
+    async def get_local_size(self, game_id: str, context: Any) -> Optional[int]:   
+        if game_id in context:
+            return context[game_id]
+
+        return None
 
     #
     # Other
@@ -301,19 +355,6 @@ class WargamingPlugin(Plugin):
         self.__rescan_games(True)
         await asyncio.sleep(self.SLEEP_CHECK_INSTANCES)
 
-
-    def __is_game_running(self, app: WGCLocalApplication) -> bool:
-        for game_path in app.GetExecutablePaths():
-            for pid in proc_tools.pids():
-                proc_path = proc_tools.get_process_info(pid).binary_path
-                if proc_path is None or proc_path == '':
-                    continue
-                if proc_path.lower().replace('\\','/') == game_path.lower().replace('\\','/'):
-                    return True
-
-        return False
-
-
     def __rescan_games(self, notify = False):
         self.__local_applications = self._wgc.get_local_applications()
 
@@ -325,7 +366,7 @@ class WargamingPlugin(Plugin):
         #change status of installed games
         for game_id, game in self.__local_applications.items():
             new_state = LocalGameState.None_
-            if self.__is_game_running(game):
+            if game.is_running():
                 new_state = LocalGameState.Installed | LocalGameState.Running
             elif game.IsInstalled():
                 new_state = LocalGameState.Installed
