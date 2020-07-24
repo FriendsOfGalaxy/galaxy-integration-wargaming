@@ -1,30 +1,27 @@
 # (c) 2019-2020 Mikhail Paulyshka
 # SPDX-License-Identifier: MIT
 
-import ctypes
 import logging
 import os
+import platform
+import shutil
 
 from .wgc_constants import USER_PROFILE_URLS
 
+### Platform
+def get_platform() -> str:
+    system = platform.system()
+    if system == 'Windows':
+        return 'windows'
+
+    if system == 'Darwin':
+        return 'macos'
+
+    logging.error('get_platform: unknown platform %s' % system)
+    return 'unknown'
+
 ### Process
 DETACHED_PROCESS = 0x00000008
-
-### Mutex
-
-SYNCHRONIZE = 0x00100000
-MUTANT_QUERY_STATE = 0x0001
-STANDARD_RIGHTS_REQUIRED = 0x000F0000
-MUTEX_ALL_ACCESS = STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE | MUTANT_QUERY_STATE
-
-def is_mutex_exists(mutex_name) -> bool:
-    kerneldll = ctypes.windll.kernel32
-    mutex_handle = kerneldll.OpenMutexW(MUTEX_ALL_ACCESS, 0, str(mutex_name))
-    if mutex_handle != 0:
-        kerneldll.CloseHandle(mutex_handle)
-        return True
-
-    return False
 
 ### FS
 
@@ -35,6 +32,12 @@ def scantree(path):
             yield from scantree(entry.path)
         else:
             yield entry
+
+def file_copy(path_source: str, path_destination):
+    '''
+    copy file with overwrite
+    '''
+    shutil.copyfile(path_source, path_destination)
 
 ### Names
 
