@@ -180,6 +180,10 @@ class WargamingPlugin(Plugin):
     #
 
     async def launch_game(self, game_id: str) -> None:
+        if game_id not in self.__local_applications:
+            logging.warning('plugin/launch_game: failed to run game with id %s' % game_id)
+            return
+
         self.__local_applications[game_id].run_application(self.__platform)
         self.__change_game_status(game_id, LocalGameState.Installed | LocalGameState.Running, True)
 
@@ -474,7 +478,8 @@ class WargamingPlugin(Plugin):
             except GamesStillBeingTrackedException:
                 pass
         else:
-            logging.error('plugin/__gametime_save_cache: gametime tracker is not initialized')
+            #it is possible situation in case when we shutdown plugin before finishing handshake
+            pass
 
         if gametime_cache:
             self.persistent_cache["gametime_cache"] = gametime_cache

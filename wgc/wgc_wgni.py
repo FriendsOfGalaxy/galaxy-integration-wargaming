@@ -6,7 +6,7 @@ import json
 import logging
 import random
 import string
-from typing import Dict
+from typing import Dict, Tuple
 
 from .wgc_constants import WGCAuthorizationResult, WGCRealms
 from .wgc_http import WgcHttp
@@ -149,7 +149,7 @@ class WgcWgni:
             data = { 'fields' : 'nickname' })
         
         if response.status != 200:
-            self.__logger.error('__request_account_info: error on retrieving account info: %s' % response.text)
+            self.__logger.error('__request_account_info: error on retrieving account info: %s, %s' % (response.status, response.text))
             return None
 
         return json.loads(response.text)
@@ -166,13 +166,17 @@ class WgcWgni:
 
         self.__login_info_temp = {'realm': realm, 'email': email, 'password': password}
 
-        challenge_data = await self.__oauth_challenge_get(realm)
-        if not challenge_data:
-            self.__logger.error('do_auth_emailpass: failed to get challenge')
-            return WGCAuthorizationResult.FAILED
+        #request challenge
+        (challenge_status, challenge_data) = await self.__oauth_challenge_get(realm)
+        if challenge_status == WGCAuthorizationResult.BANNED:
+            self.__logger.warning('do_auth_emailpass: failed to get challenge because of ban')
+            return challenge_status
+        elif challenge_status != WGCAuthorizationResult.INPROGRESS:
+            self.__logger.error('do_auth_emailpass: failed to get challenge, %s' % challenge_data)
+            return challenge_status
 
         #calculate proof of work
-        pow_number = self.__oauth_challenge_calculate(challenge_data)
+        pow_number = await self.__oauth_challenge_calculate(challenge_data)
         if not pow_number:
             self.__logger.error('do_auth_emailpass: failed to calculate challenge')
             return WGCAuthorizationResult.FAILED
@@ -301,24 +305,27 @@ class WgcWgni:
             return None
 
 
-    async def __oauth_challenge_get(self, realm):
+    async def __oauth_challenge_get(self, realm) -> Tuple[WGCAuthorizationResult, ]:
         '''
         request authentication challenge and return proof-of-work
         '''
         r = await self.__http.request_get_simple('wgnet', realm, self.OUATH_URL_CHALLENGE)
+        if r.status == 409:
+            self.__logger.warning('__oauth_challenge_get: error %s, content: %s' % (r.status, r.text))
+            return (WGCAuthorizationResult.BANNED, r.text)
         if r.status != 200:
             self.__logger.error('__oauth_challenge_get: error %s, content: %s' % (r.status, r.text))
-            return None
+            return (WGCAuthorizationResult.FAILED, r.text)
 
-        return json.loads(r.text)['pow']
+        return (WGCAuthorizationResult.INPROGRESS, json.loads(r.text)['pow'])
 
 
-    def __oauth_challenge_calculate(self, challenge_data):
+    async def __oauth_challenge_calculate(self, challenge_data) -> int:
         '''
         calculates solution for proof-of-work challenge
         '''
 
-        if challenge_data['algorithm']['name'] != 'hashcash' :
+        if challenge_data['algorithm']['name'] != 'hashcash':
             self.__logger.error('__oauth_challenge_calculate: unknown proof-of-work algorithm')
             return None
 
@@ -341,6 +348,10 @@ class WgcWgni:
                 return pow_number
 
             pow_number = pow_number + 1
+            
+            #prevent application become unresponsive
+            if pow_number % 100 == 0:
+                await asyncio.sleep(0)
 
 
     async def __oauth_token_get_bypassword(self, realm, email, password, pow_number, twofactor_token : str = None, otp_code : str = None, use_backup_code : bool = False):

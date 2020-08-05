@@ -58,7 +58,7 @@ class WGCLocation():
 
         #check %PROGRAMDATA%
         if not os.path.exists(programdata):
-            logging.getLogger('wgc_location').error('get_wgc_programdata_dir: failed to find programdata (%s)' % programdata)
+            logging.getLogger('wgc_location').warning('get_wgc_programdata_dir: failed to find programdata (%s)' % programdata)
             return ''
 
         #check WGC directory
@@ -105,7 +105,7 @@ class WGCLocation():
             return wgc_dir
 
         logging.getLogger('wgc_location').warning('get_wgc_dir: failed to find wgc directory')
-        return wgc_dir       
+        return ''       
 
     @staticmethod
     def get_wgc_exe_path() -> str:
