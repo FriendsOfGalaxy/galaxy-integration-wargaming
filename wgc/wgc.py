@@ -22,8 +22,15 @@ from .wgc_wgni import WgcWgni
 from .wgc_xmpp import WgcXMPP
 
 class WGC():
-    def __init__(self):
-        self.__http = WgcHttp()
+    def __init__(self, config : Dict):
+        self.__logger = logging.getLogger('wgc')    
+
+        #parse config
+        ssl_verify = True
+        if 'ssl_verify' in config:
+            ssl_verify = config['ssl_verify']
+
+        self.__http = WgcHttp(ssl_verify)
         self.__wgni = WgcWgni(self.__http, self.get_tracking_id())
         self.__authserver = WgcAuthServer(self.__wgni)
 
@@ -84,9 +91,9 @@ class WGC():
                 app = WGCLocalApplication(app_dir)
                 apps[app.get_app_id()] = app
             except MetadataNotFoundError:
-                logging.warning('WGC/get_local_applications: Failed to found game metadata from folder %s. ' % app_dir)
+                self.__logger.warning('WGC/get_local_applications: Failed to found game metadata from folder %s. ' % app_dir)
             except Exception:
-                logging.exception('WGC/get_local_applications: Failed to load game metadata from folder %s. ' % app_dir)
+                self.__logger.exception('WGC/get_local_applications: Failed to load game metadata from folder %s. ' % app_dir)
 
         return apps
 
@@ -129,17 +136,18 @@ class WGC():
 
         realm = self.get_wgni_client().get_account_realm()
         if realm is None:
-            logging.error('wgc/get_xmpp_wot: failed to get realm')
+            self.__logger.error('wgc/get_xmpp_wot: failed to get realm')
             return None
 
         account_id = self.get_wgni_client().get_account_id()
         if account_id is None:
-            logging.error('wgc/get_xmpp_wot: failed to get account_id')
+            self.__logger.error('wgc/get_xmpp_wot: failed to get account_id')
             return None
 
         token1 = await self.get_wgni_client().create_token1('xmppcs')
         if token1 is None:
-            logging.error('wgc/get_xmpp_wot: failed to get token1')
+            self.__logger.error('wgc/get_xmpp_wot: failed to get token1')
+            return None
 
         return WgcXMPP(game, realm, account_id, token1)
 
