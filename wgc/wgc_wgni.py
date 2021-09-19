@@ -170,12 +170,15 @@ class WgcWgni:
         self.__login_info_temp = {'realm': realm, 'email': email, 'password': password}
 
         #request challenge
-        (challenge_status, challenge_data) = await self.__oauth_challenge_get(realm)
-        if challenge_status == WGCAuthorizationResult.BANNED:
+        (challenge_status, challenge_code, challenge_data) = await self.__oauth_challenge_get(realm)
+        if challenge_status == WGCAuthorizationResult.ACCOUNT_BANNED:
             self.__logger.warning('do_auth_emailpass: failed to get challenge because of ban')
             return challenge_status
+        if challenge_status == WGCAuthorizationResult.SERVER_ERROR:
+            self.__logger.warning('do_auth_emailpass: failed to get challenge because of server error')
+            return challenge_status  
         elif challenge_status != WGCAuthorizationResult.INPROGRESS:
-            self.__logger.error('do_auth_emailpass: failed to get challenge, %s, %s' % (challenge_status, challenge_data))
+            self.__logger.error('do_auth_emailpass: failed to get challenge, status=%s, code=%s, data=%s' % (challenge_status, challenge_code, challenge_data))
             return challenge_status
 
         #calculate proof of work
@@ -193,15 +196,15 @@ class WgcWgni:
             if 'error_description' in token_data_bypassword:
                 if token_data_bypassword['error_description'] == 'twofactor_required':
                     self.__login_info_temp['twofactor_token'] = token_data_bypassword['twofactor_token']
-                    return WGCAuthorizationResult.REQUIRES_2FA
+                    return WGCAuthorizationResult.SFA_REQUIRED
                 elif token_data_bypassword['error_description'] == 'Invalid username parameter value.':
-                    return WGCAuthorizationResult.INVALID_LOGINPASS
-                elif token_data_bypassword['error_description'] == 'Invalid password parameter value.':
-                    return WGCAuthorizationResult.INVALID_LOGINPASS
-                elif token_data_bypassword['error_description'] == 'Request is missing password parameter.':
-                    return WGCAuthorizationResult.INVALID_LOGINPASS
+                    return WGCAuthorizationResult.ACCOUNT_INVALID_LOGIN
                 elif token_data_bypassword['error_description'] == 'account_not_found':
-                    return WGCAuthorizationResult.ACCOUNT_NOT_FOUND
+                    return WGCAuthorizationResult.ACCOUNT_INVALID_LOGIN
+                elif token_data_bypassword['error_description'] == 'Invalid password parameter value.':
+                    return WGCAuthorizationResult.ACCOUNT_INVALID_PASSWORD
+                elif token_data_bypassword['error_description'] == 'Request is missing password parameter.':
+                    return WGCAuthorizationResult.ACCOUNT_INVALID_PASSWORD
 
             self.__logger.error('do_auth_emailpass: failed to request token by email and password: %s' % token_data_bypassword)
             return WGCAuthorizationResult.FAILED
@@ -248,13 +251,13 @@ class WgcWgni:
             if 'error_description' in token_data_byotp:
                 error_desc = token_data_byotp['error_description'] 
                 if error_desc == 'twofactor_invalid':
-                    return WGCAuthorizationResult.INCORRECT_2FA
+                    return WGCAuthorizationResult.SFA_INCORRECT_CODE
                 elif error_desc == 'Invalid otp_code parameter value.':
-                    return WGCAuthorizationResult.INCORRECT_2FA
+                    return WGCAuthorizationResult.SFA_INCORRECT_CODE
                 elif error_desc == 'Invalid twofactor token.':
-                    return WGCAuthorizationResult.INCORRECT_2FA
+                    return WGCAuthorizationResult.SFA_INCORRECT_CODE
                 if error_desc == 'Invalid backup_code parameter value.':
-                    return WGCAuthorizationResult.INCORRECT_2FA_BACKUP
+                    return WGCAuthorizationResult.SFA_INCORRECT_BACKUP
             
             self.__logger.error('do_auth_2fa: failed to request token by email, password and OTP: %s' % token_data_byotp)
             return WGCAuthorizationResult.FAILED
@@ -286,7 +289,10 @@ class WgcWgni:
 
         #get additinal info from WGNI
         wgni_account_info = await self.__request_account_info()
-        self.__login_info['nickname'] = wgni_account_info['nickname']
+        if wgni_account_info is not None:
+            self.__login_info['nickname'] = wgni_account_info['nickname']
+        else:
+            self.__logger.warning('do_auth_token: __request_account_info returns None')
 
         return WGCAuthorizationResult.FINISHED
 
@@ -308,22 +314,22 @@ class WgcWgni:
             return None
 
 
-    async def __oauth_challenge_get(self, realm) -> Tuple[WGCAuthorizationResult, ]:
+    async def __oauth_challenge_get(self, realm) -> Tuple[WGCAuthorizationResult, int, str]:
         '''
         request authentication challenge and return proof-of-work
         '''
         r = await self.__http.request_get_simple('wgnet', realm, self.OUATH_URL_CHALLENGE)
         if r.status == 409:
-            self.__logger.warning('__oauth_challenge_get: error %s, content: %s' % (r.status, r.text))
-            return (WGCAuthorizationResult.BANNED, r.text)
+            self.__logger.warning('__oauth_challenge_get: error=%s, content=%s' % (r.status, r.text), exc_info=True)
+            return (WGCAuthorizationResult.ACCOUNT_BANNED, r.status, r.text)
         elif r.status == 502:
-            self.__logger.warning('__oauth_challenge_get: error %s, content: %s' % (r.status, r.text))
-            return (WGCAuthorizationResult.FAILED, r.text)
+            self.__logger.warning('__oauth_challenge_get: error=%s, content=%s' % (r.status, r.text), exc_info=True)
+            return (WGCAuthorizationResult.SERVER_ERROR, r.status, r.text)
         elif r.status != 200:
-            self.__logger.error('__oauth_challenge_get: error %s, content: %s' % (r.status, r.text))
-            return (WGCAuthorizationResult.FAILED, r.text)
+            self.__logger.error('__oauth_challenge_get: error=%s, content=%s' % (r.status, r.text), exc_info=True)
+            return (WGCAuthorizationResult.FAILED, r.status, r.text)
 
-        return (WGCAuthorizationResult.INPROGRESS, json.loads(r.text)['pow'])
+        return (WGCAuthorizationResult.INPROGRESS, r.status, json.loads(r.text)['pow'])
 
 
     async def __oauth_challenge_calculate(self, challenge_data) -> int:
@@ -361,6 +367,8 @@ class WgcWgni:
 
 
     async def __oauth_token_get_bypassword(self, realm, email, password, pow_number, twofactor_token : str = None, otp_code : str = None, use_backup_code : bool = False) -> Dict: 
+        result = dict()
+
         body = dict()
         body['username'] = email
         body['password'] = password
@@ -377,12 +385,17 @@ class WgcWgni:
                 body['otp_code'] = otp_code
 
         response = await self.__http.request_post_simple('wgnet', realm, self.OAUTH_URL_TOKEN, data = body)
-        
-        result = dict()
+                
+        if response.text is None:
+            self.__logger.error('__oauth_token_get_bypassword: response.text is None, satus=%s' % response.status)
+            result['status_code'] = 0
+            return result
+
         try:
             result = json.loads(response.text)
         except Exception:
-            self.__logger.exception('__oauth_token_get_bypassword: failed to parse response %s' % response.text)
+            self.__logger.exception('__oauth_token_get_bypassword: failed to parse response status=%s, text=%s' % (response.status, response.text))
+            result['status_code'] = 0
             return result
 
         result['status_code'] = response.status
@@ -434,7 +447,7 @@ class WgcWgni:
 
         #parse data
         if response.status != 200:
-            self.__logger.error('create_token1: error on retrieving token1: %s, %s' % (response.status, response.text))
+            self.__logger.error('create_token1: error on retrieving token1: status=%s, text=%s' % (response.status, response.text))
             return None
 
         content = json.loads(response.text)
