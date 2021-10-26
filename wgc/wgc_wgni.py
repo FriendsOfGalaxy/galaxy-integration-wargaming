@@ -122,7 +122,7 @@ class WgcWgni:
         wgni_account_info = await self.__request_account_info()
 
         if wgni_account_info is None:
-            self.__logger.error('login_info_set: failed to get account info')
+            self.__logger.warning('login_info_set: failed to get account info')
             return False
 
         if wgni_account_info['sub'] != login_info['user']:
@@ -148,7 +148,13 @@ class WgcWgni:
             'wgnet', self.__login_info['realm'], self.WGNI_URL_ACCOUNTINFO, 
             data = { 'fields' : 'nickname' })
         
-        if response.status == 502:
+        if response.status == 401:
+            self.__logger.warning('__request_account_info: unathorized')
+            return None
+        elif response.status == 499:
+            self.__logger.warning('__request_account_info: client closed request')
+            return None
+        elif response.status == 502:
             self.__logger.warning('__request_account_info: error on retrieving account info: %s, %s' % (response.status, response.text), exc_info=True)
             return None
         elif response.status != 200:
@@ -177,6 +183,9 @@ class WgcWgni:
         if challenge_status == WGCAuthorizationResult.SERVER_ERROR:
             self.__logger.warning('do_auth_emailpass: failed to get challenge because of server error')
             return challenge_status  
+        if challenge_status == WGCAuthorizationResult.CANCELED:
+            self.__logger.warning('do_auth_emailpass: user canceled the auth process')
+            return challenge_status
         elif challenge_status != WGCAuthorizationResult.INPROGRESS:
             self.__logger.error('do_auth_emailpass: failed to get challenge, status=%s, code=%s, data=%s' % (challenge_status, challenge_code, challenge_data))
             return challenge_status
@@ -184,7 +193,7 @@ class WgcWgni:
         #calculate proof of work
         pow_number = await self.__oauth_challenge_calculate(challenge_data)
         if not pow_number:
-            self.__logger.error('do_auth_emailpass: failed to calculate challenge')
+            self.__logger.error('do_auth_emailpass: failed to calculate challenge', exc_info = True)
             return WGCAuthorizationResult.FAILED
         self.__login_info_temp['pow_number'] = pow_number
 
@@ -247,7 +256,10 @@ class WgcWgni:
             use_backup_code)
 
         # process error
-        if token_data_byotp['status_code'] != 200:
+        if token_data_byotp['status_code'] == 499:
+            self.__logger.warning('do_auth_2fa: canceled by user')
+            return WGCAuthorizationResult.CANCELED
+        elif token_data_byotp['status_code'] != 200:
             if 'error_description' in token_data_byotp:
                 error_desc = token_data_byotp['error_description'] 
                 if error_desc == 'twofactor_invalid':
@@ -271,8 +283,12 @@ class WgcWgni:
         '''
 
         token_data_bytoken = await self.__oauth_token_get_bytoken(realm, token_data_input)
-        if not token_data_bytoken:
-            self.__logger.error('do_auth_token: failed to request token by token')
+
+        if token_data_bytoken['status_code'] == 499:
+            self.__logger.warning('do_auth_token: canceled by user')
+            return WGCAuthorizationResult.CANCELED
+        elif token_data_bytoken['status_code'] != 200:
+            self.__logger.error('do_auth_token: failed to request token by token: %s' % token_data_bytoken)
             return WGCAuthorizationResult.FAILED
         
         #generate login info
@@ -319,6 +335,9 @@ class WgcWgni:
         request authentication challenge and return proof-of-work
         '''
         r = await self.__http.request_get_simple('wgnet', realm, self.OUATH_URL_CHALLENGE)
+        if r.status == 499:
+            self.__logger.warning('__oauth_challenge_get: client closed request')
+            return (WGCAuthorizationResult.CANCELED, r.status, r.text)
         if r.status == 409:
             self.__logger.warning('__oauth_challenge_get: error=%s, content=%s' % (r.status, r.text), exc_info=True)
             return (WGCAuthorizationResult.ACCOUNT_BANNED, r.status, r.text)
@@ -385,10 +404,14 @@ class WgcWgni:
                 body['otp_code'] = otp_code
 
         response = await self.__http.request_post_simple('wgnet', realm, self.OAUTH_URL_TOKEN, data = body)
-                
+        result['status_code'] = response.status
+
+        if response.status == 499:
+            self.__logger.warning('__oauth_token_get_bypassword: user canceled the auth process, status=%s' % response.status)
+            return result
+
         if response.text is None:
-            self.__logger.error('__oauth_token_get_bypassword: response.text is None, satus=%s' % response.status)
-            result['status_code'] = 0
+            self.__logger.error('__oauth_token_get_bypassword: response.text is None, status=%s' % response.status)
             return result
 
         try:
@@ -402,7 +425,9 @@ class WgcWgni:
         return result
 
 
-    async def __oauth_token_get_bytoken(self, realm, token_data):
+    async def __oauth_token_get_bytoken(self, realm, token_data) -> Dict:
+        result = dict()
+
         body = dict()
         body['access_token'] = token_data['access_token']
         body['grant_type'] = self.OAUTH_GRANT_TYPE_BYTOKEN
@@ -411,13 +436,18 @@ class WgcWgni:
         body['tid'] = self.__tracking_id
 
         response = await self.__http.request_post_simple('wgnet', realm, self.OAUTH_URL_TOKEN, data = body)
+        result['status_code'] = 499
 
-        if response.status != 200:
+        if response.status == 499:
+            self.__logger.warning('__oauth_token_get_bytoken: user canceled the auth process, status=%s' % response.status)
+            return result
+        elif response.status != 200:
             self.__logger.error('__oauth_token_get_bytoken: error on receiving token by token: %s because status is %s' % (response.text, response.status))
-            return None
+            return result
 
         result = json.loads(response.text)
         result['exchange_code'] = body['exchange_code']
+        result['status_code'] = response.status
 
         return result
 

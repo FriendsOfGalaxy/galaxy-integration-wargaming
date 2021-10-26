@@ -91,11 +91,13 @@ class WgcApi:
             'wgcps', self.__wgni.get_account_realm(), self.WGCPS_FETCH_PRODUCT_INFO, 
             json = { 'account_id' : self.__wgni.get_account_id(), 'country' : self._country_code, 'storefront' : 'wgc_showcase' })
 
-        if response.status == 502:
+        if response.status == 499:
+            self.__logger.warning('__wgcps_fetch_product_list: failed to get data: client closed')
+            return None
+        elif response.status == 502:
             self.__logger.warning('__wgcps_fetch_product_list: failed to get data: bad gateway')
             return None
-
-        if response.status == 504:
+        elif response.status == 504:
             self.__logger.warning('__wgcps_fetch_product_list: failed to get data: gateway timeout')
             return None
 
@@ -152,11 +154,11 @@ class WgcApi:
     # 
 
     async def fetch_app_metadata(self, update_server: str, app_id: str) -> str:
-        url = '%s/%s/?guid=%s&chain_id=unknown&protocol_version=6.9' % (update_server, self.WGUS_METADATA, app_id)
+        url = '%s/%s/?guid=%s&chain_id=unknown&protocol_version=7.2' % (update_server, self.WGUS_METADATA, app_id)
         
         response = await self.__http.request_get(url) 
         if response.status != 200:
-            self.__logger.error('fetch_app_metadata: error on retrieving showroom data: (%s, %s)' % (url, response.text))
+            self.__logger.error('fetch_app_metadata: error on retrieving metadata: url=%s, response=%s)' % (url, response.text))
             return None
 
         return response.text
